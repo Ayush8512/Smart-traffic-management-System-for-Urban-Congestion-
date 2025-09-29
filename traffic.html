@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Powered Traffic Simulation (SIH Prototype)</title>
+    <!-- TensorFlow.js and COCO-SSD Model -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0b1220; color: #e6eef8; margin:0; min-height:100vh; }
+        .btn:hover { transform: translateY(-2px); transition: transform 0.2s; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* --- Modal Styles --- */
+        #notificationModal.flex { display: flex; }
+        #notificationModal.hidden { display: none; }
+        #modalContent.active {
+            transform: scale(1); opacity: 1;
+            transition: transform 0.2s ease-out, opacity 0.2s ease-out;
+        }
+
+        /* --- AI Toggle Switch --- */
+        .switch { position: relative; display: inline-block; width: 60px; height: 34px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #4a5568; transition: .4s; border-radius: 34px; }
+        .slider:before { position: absolute; content: ""; height: 26px; width: 26px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: #2563eb; }
+        input:checked + .slider:before { transform: translateX(26px); }
+
+        /* --- AI Camera Feed Canvas --- */
+        #ai-feed-container { position: relative; }
+        #cameraCanvas, #overlayCanvas { border-radius: 0.5rem; display:block; width:100%; height:auto; aspect-ratio: 16/9; }
+        #overlayCanvas { position: absolute; top: 0; left: 0; }
+        
+        /* --- UI Feedback Animation --- */
+        @keyframes flash-animation {
+            0% { background-color: rgba(75, 85, 99, 0.4); } /* bg-gray-900/40 */
+            50% { background-color: rgba(96, 165, 250, 0.3); } /* bg-blue-400/30 */
+            100% { background-color: rgba(75, 85, 99, 0.4); }
+        }
+        .flash-new {
+            animation: flash-animation 1s ease-out;
+        }
+    </style>
+</head>
+<body class="p-4">
+    <div class="max-w-7xl mx-auto flex flex-col gap-4 h-[calc(100vh-2rem)]">
+        <header class="flex items-center justify-between">
+            <div>
+                <h1 class="text-2xl md:text-3xl font-bold">AI Traffic <span class="text-blue-400">Management</span></h1>
+                <p class="text-sm text-gray-300">Live Density Detection Prototype for SIH</p>
+            </div>
+            <div>
+                <button id="factBtn" class="btn bg-indigo-600 text-white font-semibold py-2 px-4 rounded-lg">✨ Traffic Fact</button>
+            </div>
+        </header>
+
+        <div class="flex flex-col md:flex-row gap-4 flex-1 min-h-0">
+            <!-- Left Column: Simulation and AI Feed -->
+            <div class="flex-1 flex flex-col gap-4">
+                <!-- Main Traffic Simulation -->
+                <div class="flex-1 bg-gray-800 rounded-lg p-2" id="canvas-wrap">
+                     <canvas id="trafficCanvas" class="w-full h-full"></canvas>
+                </div>
+
+                <!-- AI Camera Feed -->
+                <div class="bg-gray-800 p-4 rounded-lg">
+                    <h2 class="font-bold text-lg mb-2">📹 AI Camera Feed & Analysis</h2>
+                    <p id="ai-status" class="text-sm text-yellow-400 mb-2">Loading AI Model... Please wait.</p>
+                    <div id="ai-feed-container" class="bg-gray-900 rounded-lg">
+                        <canvas id="cameraCanvas"></canvas>
+                        <canvas id="overlayCanvas"></canvas>
+                    </div>
+                    <div id="ai-stats" class="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm mt-2"></div>
+                </div>
+            </div>
+
+            <!-- Right Column: Controls and Logs -->
+            <aside class="w-full md:w-80 bg-gray-800 p-4 rounded-lg flex flex-col gap-4 overflow-auto">
+                <!-- AI Mode Toggle -->
+                <div class="flex justify-between items-center p-2 bg-gray-900/40 rounded-lg">
+                    <h3 class="font-bold text-lg">Control Mode</h3>
+                    <div class="flex items-center gap-2">
+                        <span id="modeLabel" class="text-sm font-semibold">MANUAL</span>
+                        <label class="switch">
+                            <input type="checkbox" id="aiModeToggle">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <h2 class="font-bold text-lg">Live Stats</h2>
+                <div id="lane-stats" class="space-y-2"></div>
+
+                <div class="pt-4 border-t border-gray-700">
+                    <label class="text-sm text-gray-400">Spawn Interval (ms): <span id="spawnRateLabel">400</span></label>
+                    <input id="spawnRate" type="range" min="200" max="1500" value="400" class="w-full">
+                </div>
+
+                 <div class="pt-4 border-t border-gray-700">
+                    <h3 class="font-semibold">Challan Log (चालान लॉग)</h3>
+                    <div id="challan-log-container" class="bg-gray-900/40 p-2 rounded h-28">
+                        <div id="challan-log" class="text-sm text-gray-300 h-full overflow-auto"><p class="text-gray-400">No violations yet.</p></div>
+                    </div>
+                </div>
+
+                <div class="pt-4 border-t border-gray-700">
+                    <h3 class="font-semibold">Reward Log (इनाम लॉग)</h3>
+                     <div id="reward-log-container" class="bg-gray-900/40 p-2 rounded h-28">
+                        <div id="reward-log" class="text-sm text-gray-300 h-full overflow-auto"><p class="text-gray-400">No rewards yet.</p></div>
+                    </div>
+                </div>
+
+                <!-- Vehicle Status Check Section -->
+                <div class="pt-4 border-t border-gray-700">
+                    <h3 class="font-semibold">Check Vehicle Status (वाहन स्थिति जांचें)</h3>
+                    <div class="flex gap-2 mt-2">
+                        <input type="text" id="vehicleSearchInput" placeholder="Enter License Plate..." class="w-full bg-gray-900 text-white rounded px-2 py-1 text-sm border border-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                        <button id="vehicleSearchBtn" class="btn bg-indigo-600 text-white text-sm font-semibold py-1 px-3 rounded-lg">Search</button>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">Format: UP-70-AB-1234</p>
+                    <div id="vehicleSearchResults" class="mt-2 text-sm bg-gray-900/40 p-2 rounded min-h-[50px]">
+                        <p class="text-gray-400">Enter a license plate to see its status.</p>
+                    </div>
+                </div>
+            </aside>
+        </div>
+    </div>
+    
+    <!-- Modal for notifications -->
+    <div id="notificationModal" class="fixed inset-0 bg-black bg-opacity-60 hidden items-center justify-center p-4 z-50">
+        <div class="bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md transform transition-all scale-95 opacity-0" id="modalContent">
+            <div class="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
+                <h3 id="modalTitle" class="text-xl font-bold text-white"></h3>
+                <button id="closeModalBtn" class="text-2xl text-gray-400 hover:text-white leading-none">&times;</button>
+            </div>
+            <div id="modalBody" class="text-gray-300"></div>
+        </div>
+    </div>
+
+<script>
+// ------------------- General Configuration & Constants -------------------
+const DEBUG = true; // Set to false to disable console logs for production
+const MIN_GREEN_MS = 3000;
+const MAX_GREEN_MS = 15000;
+const YELLOW_MS = 2000;
+const REWARD_THRESHOLD = 3;
+const AI_DETECTION_INTERVAL_MS = 250; // Run AI detection every 250ms (4 times per second)
+const STATS_UPDATE_INTERVAL_MS = 250; // Update UI stats every 250ms
+const VEHICLE_SPACING = 25; // Minimum pixel distance between vehicles
+const MS_PER_VEHICLE_GREEN_LIGHT = 2000; // Extra green light time per vehicle detected
+const VIOLATION_FLASH_FRAMES = 60; // How many frames a violating vehicle should flash red
+
+// Custom logger
+function log(...args) {
+    if (DEBUG) {
+        console.log('[DEBUG]', ...args);
+    }
+}
+
+// ------------------- DOM Elements -------------------
+const trafficCanvas = document.getElementById('trafficCanvas');
+const spawnRateSlider = document.getElementById('spawnRate');
+const spawnRateLabel = document.getElementById('spawnRateLabel');
+const challanLogContainer = document.getElementById('challan-log-container');
+const rewardLogContainer = document.getElementById('reward-log-container');
+const challanLog = document.getElementById('challan-log');
+const rewardLog = document.getElementById('reward-log');
+const laneStats = document.getElementById('lane-stats');
+const factBtn = document.getElementById('factBtn');
+const aiModeToggle = document.getElementById('aiModeToggle');
+const modeLabel = document.getElementById('modeLabel');
+const aiStatus = document.getElementById('ai-status');
+const aiStats = document.getElementById('ai-stats');
+const cameraCanvas = document.getElementById('cameraCanvas');
+const overlayCanvas = document.getElementById('overlayCanvas');
+const vehicleSearchInput = document.getElementById('vehicleSearchInput');
+const vehicleSearchBtn = document.getElementById('vehicleSearchBtn');
+const vehicleSearchResults = document.getElementById('vehicleSearchResults');
+
+
+// ------------------- Modal Elements & Functions -------------------
+const modal = document.getElementById('notificationModal'), modalContent = document.getElementById('modalContent'), modalTitle = document.getElementById('modalTitle'), modalBody = document.getElementById('modalBody'), closeModalBtn = document.getElementById('closeModalBtn');
+function showModal(title, bodyHtml) { modalTitle.textContent = title; modalBody.innerHTML = bodyHtml; modal.classList.remove('hidden'); modal.classList.add('flex'); setTimeout(() => modalContent.classList.add('active'), 10); }
+function hideModal() { modalContent.classList.remove('active'); setTimeout(() => { modal.classList.add('hidden'); modal.classList.remove('flex'); }, 200); }
+closeModalBtn.addEventListener('click', hideModal);
+modal.addEventListener('click', (e) => { if (e.target === modal) hideModal(); });
+
+// ------------------- Canvas & Context -------------------
+const trafficCtx = trafficCanvas.getContext('2d');
+const cameraCtx = cameraCanvas.getContext('2d');
+const overlayCtx = overlayCanvas.getContext('2d');
+const LANE_WIDTH = 40;
+const INTERSECTION_SIZE = 100;
+
+function resizeCanvases() {
+    // Resize main simulation canvas
+    const simRect = trafficCanvas.parentElement.getBoundingClientRect();
+    if (trafficCanvas.width !== simRect.width || trafficCanvas.height !== simRect.height) {
+        trafficCanvas.width = simRect.width;
+        trafficCanvas.height = simRect.height;
+    }
+    // Resize AI camera feed canvases while maintaining aspect ratio
+    const camRect = cameraCanvas.parentElement.getBoundingClientRect();
+    const aspectRatio = 16/9;
+    cameraCanvas.width = camRect.width;
+    cameraCanvas.height = camRect.width / aspectRatio;
+    overlayCanvas.width = cameraCanvas.width;
+    overlayCanvas.height = cameraCanvas.height;
+    log('Canvases resized');
+}
+window.addEventListener('resize', resizeCanvases);
+
+// ------------------- AI / TensorFlow.js Section -------------------
+let aiModel = null;
+let aiDetectedCounts = { 1: 0, 2: 0, 3: 0, 4: 0 };
+// Defines detection zones on the AI camera feed as percentages [x, y, width, height]
+const AI_LANE_ZONES = [ 
+    { id: 1, zone: [0.45, 0, 0.1, 0.45], color: 'rgba(255, 0, 0, 0.5)' }, // Top
+    { id: 2, zone: [0.55, 0.45, 0.45, 0.1], color: 'rgba(0, 255, 0, 0.5)' }, // Right
+    { id: 3, zone: [0.45, 0.55, 0.1, 0.45], color: 'rgba(0, 0, 255, 0.5)' }, // Bottom
+    { id: 4, zone: [0, 0.45, 0.45, 0.1], color: 'rgba(255, 255, 0, 0.5)' } // Left
+];
+
+async function loadAiModel() {
+    log('Loading AI Model...');
+    try {
+        aiModel = await cocoSsd.load();
+        aiStatus.textContent = "✅ AI Model Loaded. Detection is active.";
+        aiStatus.classList.replace('text-yellow-400', 'text-green-400');
+        log('AI Model Loaded Successfully.');
+    } catch(err) {
+        aiStatus.textContent = "❌ Error loading AI Model. Check console.";
+        aiStatus.classList.replace('text-yellow-400', 'text-red-400');
+        console.error("AI Model Loading Error:", err);
+    }
+}
+
+// Utility to check if two rectangular boxes overlap
+function isOverlapping(box1, box2) {
+    return !(box1[0] > box2[0] + box2[2] || box1[0] + box1[2] < box2[0] || box1[1] > box2[1] + box2[3] || box1[1] + box1[3] < box2[1]);
+}
+
+async function detectObjectsOnCamera() {
+    if (!aiModel) return; // Don't run if model isn't loaded
+
+    const predictions = await aiModel.detect(cameraCanvas);
+    overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+    Object.keys(aiDetectedCounts).forEach(k => aiDetectedCounts[k] = 0);
+
+    // Process each prediction
+    predictions.forEach(p => {
+        if (['car', 'truck', 'bus'].includes(p.class)) {
+            // Draw bounding box and label
+            overlayCtx.strokeStyle = '#10b981';
+            overlayCtx.lineWidth = 2;
+            overlayCtx.strokeRect(...p.bbox);
+            overlayCtx.fillStyle = '#10b981';
+            overlayCtx.fillText(`${p.class} (${Math.round(p.score*100)}%)`, p.bbox[0], p.bbox[1] > 10 ? p.bbox[1]-5 : 10);
+            
+            // Check which lane zone the detected object is in
+            AI_LANE_ZONES.forEach(laneZone => {
+                 const zoneRect = [
+                    laneZone.zone[0] * overlayCanvas.width, laneZone.zone[1] * overlayCanvas.height,
+                    laneZone.zone[2] * overlayCanvas.width, laneZone.zone[3] * overlayCanvas.height
+                ];
+                if (isOverlapping(p.bbox, zoneRect)) {
+                    aiDetectedCounts[laneZone.id]++;
+                }
+            });
+        }
+    });
+    
+    // Draw the detection zones for visualization
+    AI_LANE_ZONES.forEach(laneZone => {
+        const z = laneZone.zone;
+        overlayCtx.fillStyle = laneZone.color.replace('0.5', '0.1'); // Make it transparent
+        overlayCtx.fillRect(z[0]*overlayCanvas.width, z[1]*overlayCanvas.height, z[2]*overlayCanvas.width, z[3]*overlayCanvas.height);
+        overlayCtx.font = "bold 14px Inter";
+        overlayCtx.fillStyle = laneZone.color;
+        overlayCtx.fillText(`Lane ${laneZone.id}`, z[0]*overlayCanvas.width + 5, z[1]*overlayCanvas.height + 15);
+    });
+}
+
+function updateAiStats() {
+    aiStats.innerHTML = Object.entries(aiDetectedCounts).map(([laneId, count]) => {
+        return `<div class="bg-gray-900/50 p-1 rounded text-center"><strong>Lane ${laneId}:</strong> <span class="font-bold text-lg text-blue-300">${count}</span></div>`;
+    }).join('');
+}
+
+// ------------------- Simulated Camera Feed -------------------
+const feedVehicles = [];
+function setupSimulatedFeed() {
+    for(let i=0; i<15; i++) {
+        feedVehicles.push({
+            x: Math.random() * cameraCanvas.width, y: Math.random() * cameraCanvas.height,
+            w: Math.random()*15 + 20, h: Math.random()*30 + 35,
+            speed: Math.random()*1 + 0.5, color: `hsl(${Math.random()*60+200}, 50%, 50%)`,
+            dir: Math.floor(Math.random()*4) // 0:down, 1:left, 2:up, 3:right
+        });
+    }
+}
+function animateSimulatedFeed() {
+    cameraCtx.fillStyle = '#333';
+    cameraCtx.fillRect(0,0, cameraCanvas.width, cameraCanvas.height);
+    feedVehicles.forEach(v => {
+        cameraCtx.fillStyle = v.color;
+        cameraCtx.fillRect(v.x, v.y, v.w, v.h);
+        if(v.dir === 0) v.y += v.speed; else if(v.dir === 1) v.x -= v.speed;
+        else if(v.dir === 2) v.y -= v.speed; else if(v.dir === 3) v.x += v.speed;
+        if (v.x > cameraCanvas.width) v.x = -v.w; if (v.x < -v.w) v.x = cameraCanvas.width;
+        if (v.y > cameraCanvas.height) v.y = -v.h; if (v.y < -v.h) v.y = cameraCanvas.height;
+    });
+}
+
+// ------------------- Simulation State and Classes -------------------
+class Lane { constructor(id) { this.id = id; this.vehicles = []; this.light = 'red'; } }
+const lanes = [new Lane(1), new Lane(2), new Lane(3), new Lane(4)];
+let activeLaneIndex = 0;
+let greenTimerMs = MIN_GREEN_MS;
+let yellowTimerMs = 0;
+let lastSpawn = 0;
+let challans = [];
+let rewards = [];
+let goodDrivers = {}; 
+
+const VEHICLE_TYPES = {
+    CAR: { size: {w:16, h:32}, speed: 80, color: () => '#3b82f6' },
+    TRUCK: { size: {w:20, h:50}, speed: 60, color: () => '#4a5568' },
+    BUS: { size: {w:18, h:55}, speed: 50, color: () => '#10b981' }
+};
+
+function generateLicensePlate(){
+    const states = ['UP', 'DL', 'MH', 'KA', 'TN', 'WB', 'GJ', 'RJ'];
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const state = states[Math.floor(Math.random() * states.length)];
+    const rto = String(Math.floor(Math.random() * 80) + 10);
+    const l1 = letters[Math.floor(Math.random() * letters.length)];
+    const l2 = letters[Math.floor(Math.random() * letters.length)];
+    const num = String(Math.floor(Math.random() * 9000) + 1000);
+    return `${state}-${rto}-${l1}${l2}-${num}`;
+}
+
+class Vehicle {
+    constructor(lane, type) {
+        this.id = generateLicensePlate(); this.lane = lane; this.type = type;
+        this.width = type.size.w; this.height = type.size.h; this.speed = type.speed; this.color = type.color();
+        this.stopped = false; this.hasCrossedStopLine = false; this.isViolating = 0; this.violated = false;
+        
+        const center = { x: trafficCanvas.width/2, y: trafficCanvas.height/2 };
+        switch(this.lane.id){
+            case 1: this.x = center.x - LANE_WIDTH/2; this.y = -this.height; break;
+            case 2: this.x = trafficCanvas.width + this.height; this.y = center.y - LANE_WIDTH/2; break;
+            case 3: this.x = center.x + LANE_WIDTH/2; this.y = trafficCanvas.height + this.height; break;
+            case 4: this.x = -this.height; this.y = center.y + LANE_WIDTH/2; break;
+        }
+    }
+    draw() {
+        trafficCtx.save();
+        trafficCtx.translate(this.x, this.y);
+        const rotation = {1:0, 2:-Math.PI/2, 3:Math.PI, 4:Math.PI/2}[this.lane.id];
+        trafficCtx.rotate(rotation);
+        
+        if (this.isViolating > 0) {
+            trafficCtx.fillStyle = (Math.floor(this.isViolating/5)%2===0)?'#ef4444':this.color;
+            this.isViolating--;
+        } else {
+            trafficCtx.fillStyle = this.color;
+        }
+        
+        const bodyHeight = this.height - this.width/2;
+        trafficCtx.fillRect(-this.width/2, -this.height/2 + this.width/2, this.width, bodyHeight);
+        trafficCtx.beginPath(); trafficCtx.arc(0, -this.height/2 + this.width/2, this.width/2, Math.PI, 0); trafficCtx.fill();
+        trafficCtx.restore();
+    }
+    update(deltaMs, frontVehicle){
+        this.stopped = false;
+        const delta = deltaMs / 1000;
+        const center = { x: trafficCanvas.width/2, y: trafficCanvas.height/2 };
+        const stopLineDist = INTERSECTION_SIZE/2;
+        
+        // Rule 1: Check for vehicle in front and stop if too close
+        if (frontVehicle) {
+            let distance = 0;
+            switch(this.lane.id){
+                case 1: distance = frontVehicle.y - this.y; break;
+                case 2: distance = this.x - frontVehicle.x; break;
+                case 3: distance = this.y - frontVehicle.y; break;
+                case 4: distance = frontVehicle.x - this.x; break;
+            }
+            if (distance < this.height + VEHICLE_SPACING) this.stopped = true;
+        }
+        
+        // Rule 2: Check for red light and stop if approaching intersection
+        let isBeforeStopLine = false;
+        switch(this.lane.id){
+            case 1: isBeforeStopLine = this.y + this.height/2 < center.y - stopLineDist; break;
+            case 2: isBeforeStopLine = this.x - this.height/2 > center.x + stopLineDist; break;
+            case 3: isBeforeStopLine = this.y - this.height/2 > center.y + stopLineDist; break;
+            case 4: isBeforeStopLine = this.x + this.height/2 < center.x - stopLineDist; break;
+        }
+        
+        if(this.lane.light === 'red' && isBeforeStopLine) {
+            let stopDistance;
+            switch(this.lane.id) {
+                case 1: stopDistance = (center.y - stopLineDist) - (this.y + this.height / 2); break;
+                case 2: stopDistance = (this.x - this.height / 2) - (center.x + stopLineDist); break;
+                case 3: stopDistance = (this.y - this.height / 2) - (center.y + stopLineDist); break;
+                case 4: stopDistance = (center.x - stopLineDist) - (this.x + this.height / 2); break;
+            }
+            // Stop if the vehicle is within braking distance
+            if (stopDistance < this.speed * 0.5) this.stopped = true;
+        }
+
+        // Rule 3: Check for red light violation
+        if (!isBeforeStopLine && !this.hasCrossedStopLine) {
+            this.hasCrossedStopLine = true;
+            if (this.lane.light === 'red') {
+                this.isViolating = VIOLATION_FLASH_FRAMES; this.violated = true;
+                challans.unshift({ id: this.id, lane: this.lane.id, time: new Date().toLocaleTimeString() });
+                goodDrivers[this.id] = 0; // Reset good driver score
+            }
+        }
+
+        // If no rules have stopped the vehicle, move it forward
+        if (!this.stopped) {
+            switch(this.lane.id){
+                case 1: this.y += this.speed * delta; break;
+                case 2: this.x -= this.speed * delta; break;
+                case 3: this.y -= this.speed * delta; break;
+                case 4: this.x += this.speed * delta; break;
+            }
+        }
+    }
+    isOffscreen(){ return (this.x < -this.height*2 || this.x > trafficCanvas.width + this.height*2 || this.y < -this.height*2 || this.y > trafficCanvas.height + this.height*2); }
+}
+
+// ------------------- DOM Updates -------------------
+let prevStatsHash = '', prevChallanLen = -1, prevRewardLen = -1;
+
+function updateStatsPanelIfNeeded(){
+    // FIX: The hash now correctly reflects the state of ALL lanes
+    const hash = lanes.map(l => {
+        const count = aiModeToggle.checked ? (aiDetectedCounts[l.id] || 0) : l.vehicles.length;
+        return `${l.id}:${count}:${l.light}`;
+    }).join('|');
+
+    if (hash === prevStatsHash) return;
+    prevStatsHash = hash;
+
+    laneStats.innerHTML = lanes.map(lane => {
+        const isGreen = lane.light === 'green', isYellow = lane.light === 'yellow';
+        const timerText = isGreen ? `${Math.ceil(greenTimerMs/1000)}s` : (isYellow ? `${Math.ceil(yellowTimerMs/1000)}s` : '-');
+        const vCount = aiModeToggle.checked ? (aiDetectedCounts[lane.id] || 0) : lane.vehicles.length;
+        return `<div class="p-2 bg-gray-900/30 rounded">
+            <div class="flex justify-between items-center"><strong>Lane ${lane.id}</strong><span class="text-xs font-bold">${lane.light.toUpperCase()}</span></div>
+            <div class="text-xs text-gray-300">Vehicles: <strong>${vCount}</strong> <span class="ml-2">Timer: <strong>${timerText}</strong></span></div>
+        </div>`;
+    }).join('');
+}
+
+function updateChallanLogIfNeeded(){
+    if (challans.length === prevChallanLen) return;
+    if(challans.length > prevChallanLen) { // New challan added
+        challanLogContainer.classList.add('flash-new');
+        setTimeout(() => challanLogContainer.classList.remove('flash-new'), 1000);
+    }
+    prevChallanLen = challans.length;
+    
+    if (challans.length === 0) { challanLog.innerHTML = '<p class="text-gray-400">No violations yet.</p>'; return; }
+    challanLog.innerHTML = challans.slice(0,10).map((c,idx)=>`<div class="p-1.5 ${idx%2===0?'bg-gray-900/20':''} rounded"><strong>${c.id}</strong><p class="text-xs text-gray-400">Lane ${c.lane} • ${c.time}</p></div>`).join('');
+}
+
+function updateRewardLogIfNeeded(){
+    if (rewards.length === prevRewardLen) return;
+    if(rewards.length > prevRewardLen) { // New reward added
+        rewardLogContainer.classList.add('flash-new');
+        setTimeout(() => rewardLogContainer.classList.remove('flash-new'), 1000);
+    }
+    prevRewardLen = rewards.length;
+
+    if (rewards.length === 0) { rewardLog.innerHTML = '<p class="text-gray-400">No rewards yet.</p>'; return; }
+    rewardLog.innerHTML = rewards.slice(0,10).map((r,idx)=>`<div class="p-1.5 ${idx%2===0?'bg-gray-900/20':''} rounded"><strong>${r.id}</strong><p class="text-xs text-green-300">${r.trips} safe trips • ${r.time}</p></div>`).join('');
+}
+
+// ------------------- Event Handlers -------------------
+factBtn.addEventListener('click', () => showModal('Traffic Fact', `<p class="text-lg text-center p-4">The average person spends about 38 hours a year stuck in traffic.</p>`));
+spawnRateSlider.addEventListener('input', (e) => spawnRateLabel.textContent = e.target.value);
+aiModeToggle.addEventListener('change', (e) => {
+    modeLabel.textContent = e.target.checked ? 'AI' : 'MANUAL';
+    modeLabel.classList.toggle('text-blue-300', e.target.checked);
+    log(`Switched to ${e.target.checked ? 'AI' : 'MANUAL'} mode.`);
+});
+
+vehicleSearchBtn.addEventListener('click', () => {
+    const plateToSearch = vehicleSearchInput.value.trim().toUpperCase();
+    if (!plateToSearch) {
+        vehicleSearchResults.innerHTML = '<p class="text-yellow-400">Please enter a license plate number.</p>';
+        return;
+    }
+    log(`Searching for vehicle: ${plateToSearch}`);
+
+    const foundChallans = challans.filter(c => c.id === plateToSearch);
+    const safeTrips = goodDrivers[plateToSearch] || 0;
+
+    let resultsHtml = `<h4 class="font-bold text-lg text-white">${plateToSearch}</h4>`;
+
+    // Check current status
+    const onScreenVehicle = lanes.flatMap(l => l.vehicles).find(v => v.id === plateToSearch);
+    if(onScreenVehicle) {
+        resultsHtml += `<p class="text-green-400">Status: Currently on road in Lane ${onScreenVehicle.lane.id}.</p>`;
+    } else {
+        resultsHtml += `<p class="text-gray-400">Status: Not currently on road.</p>`;
+    }
+
+    // Add Safe Trips info
+    resultsHtml += `<p class="mt-2"><strong>Total Safe Trips:</strong> ${safeTrips}</p>`;
+
+    // Add Challan info
+    if (foundChallans.length > 0) {
+        resultsHtml += `<h5 class="font-semibold text-red-400 mt-2">Challan History (${foundChallans.length}):</h5>`;
+        resultsHtml += '<ul class="list-disc list-inside text-gray-300 text-xs">';
+        foundChallans.forEach(c => {
+            resultsHtml += `<li>Lane ${c.lane} at ${c.time}</li>`;
+        });
+        resultsHtml += '</ul>';
+    } else {
+         resultsHtml += `<p class="text-green-300 mt-2">No challans found.</p>`;
+    }
+
+    vehicleSearchResults.innerHTML = resultsHtml;
+});
+
+
+// ------------------- Drawing & Scene -------------------
+function drawScene(){
+    const center = { x: trafficCanvas.width/2, y: trafficCanvas.height/2 };
+    trafficCtx.clearRect(0,0,trafficCanvas.width,trafficCanvas.height);
+    trafficCtx.fillStyle = '#374151'; trafficCtx.fillRect(0,0,trafficCanvas.width,trafficCanvas.height);
+    trafficCtx.fillStyle = '#6b7280'; trafficCtx.fillRect(center.x - LANE_WIDTH, 0, LANE_WIDTH*2, trafficCanvas.height);
+    trafficCtx.fillStyle = '#6b7280'; trafficCtx.fillRect(0, center.y - LANE_WIDTH, trafficCanvas.width, LANE_WIDTH*2);
+
+    lanes.forEach(l => l.vehicles.forEach(v => v.draw()));
+
+    // Draw Lane Numbers
+    trafficCtx.font = 'bold 24px Inter';
+    trafficCtx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    trafficCtx.textAlign = 'center';
+    trafficCtx.textBaseline = 'middle';
+    trafficCtx.fillText('1', center.x, 20); // Lane 1 (Top)
+    trafficCtx.fillText('2', trafficCanvas.width - 20, center.y); // Lane 2 (Right)
+    trafficCtx.fillText('3', center.x, trafficCanvas.height - 20); // Lane 3 (Bottom)
+    trafficCtx.fillText('4', 20, center.y); // Lane 4 (Left)
+
+
+    const lightSize = 10;
+    const positions = [
+        { x: center.x - LANE_WIDTH - lightSize, y: center.y - INTERSECTION_SIZE/2 - lightSize*2 }, { x: center.x + INTERSECTION_SIZE/2 + lightSize*2, y: center.y - LANE_WIDTH - lightSize },
+        { x: center.x + LANE_WIDTH + lightSize, y: center.y + INTERSECTION_SIZE/2 + lightSize*2 }, { x: center.x - INTERSECTION_SIZE/2 - lightSize*2, y: center.y + LANE_WIDTH + lightSize },
+    ];
+    lanes.forEach((lane,i)=>{
+        const p = positions[i];
+        let color = lane.light === 'green' ? '#22c55e' : (lane.light === 'yellow' ? '#eab308' : '#ef4444');
+        trafficCtx.fillStyle = color; trafficCtx.shadowColor = color; trafficCtx.shadowBlur = 15;
+        trafficCtx.beginPath(); trafficCtx.arc(p.x, p.y, lightSize, 0, Math.PI*2); trafficCtx.fill();
+        trafficCtx.shadowBlur = 0;
+    });
+}
+
+// ------------------- Core Simulation & Traffic Light Logic -------------------
+function completeSwitch() {
+    lanes[activeLaneIndex].light = 'red';
+    activeLaneIndex = (activeLaneIndex + 1) % lanes.length;
+    lanes[activeLaneIndex].light = 'green';
+    
+    // ** THE CORE AI LOGIC **
+    // If AI mode is on, use detected vehicle count, otherwise use simulated vehicle count.
+    const vehicleCount = aiModeToggle.checked ? aiDetectedCounts[lanes[activeLaneIndex].id] : lanes[activeLaneIndex].vehicles.length;
+    
+    greenTimerMs = Math.min(MAX_GREEN_MS, MIN_GREEN_MS + vehicleCount * MS_PER_VEHICLE_GREEN_LIGHT);
+    log(`Light changed. Lane ${lanes[activeLaneIndex].id} is now GREEN for ${Math.round(greenTimerMs/1000)}s based on ${vehicleCount} vehicles.`);
+}
+
+function switchTrafficLightToYellow() {
+    lanes[activeLaneIndex].light = 'yellow';
+    yellowTimerMs = YELLOW_MS;
+}
+
+function updateSimulation(deltaMs, timestamp) {
+    // Spawn new vehicles periodically
+    if (timestamp - lastSpawn > Number(spawnRateSlider.value)) {
+        const lane = lanes[Math.floor(Math.random()*lanes.length)];
+        // Prevent overcrowding
+        if (lane.vehicles.length < Math.floor(trafficCanvas.height / 40)) {
+            const roll = Math.random();
+            let type = roll > 0.85 ? VEHICLE_TYPES.BUS : (roll > 0.65 ? VEHICLE_TYPES.TRUCK : VEHICLE_TYPES.CAR);
+            lane.vehicles.push(new Vehicle(lane, type));
+        }
+        lastSpawn = timestamp;
+    }
+
+    // Update each vehicle and handle offscreen ones
+    lanes.forEach(lane => {
+        lane.vehicles.forEach((v,i)=> v.update(deltaMs, i>0 ? lane.vehicles[i-1] : null));
+        
+        const offscreen = lane.vehicles.filter(v => v.isOffscreen());
+        offscreen.forEach(v => {
+            if (!v.violated) {
+                goodDrivers[v.id] = (goodDrivers[v.id] || 0) + 1;
+                if (goodDrivers[v.id] > 0 && goodDrivers[v.id] % REWARD_THRESHOLD === 0) {
+                    rewards.unshift({ id: v.id, trips: goodDrivers[v.id], time: new Date().toLocaleTimeString() });
+                }
+            }
+        });
+        lane.vehicles = lane.vehicles.filter(v => !v.isOffscreen());
+    });
+
+    // Update traffic light timers
+    if (yellowTimerMs > 0) {
+        yellowTimerMs -= deltaMs; if (yellowTimerMs <= 0) { completeSwitch(); }
+    } else if (greenTimerMs > 0) {
+        greenTimerMs -= deltaMs; if (greenTimerMs <= 0) { switchTrafficLightToYellow(); }
+    }
+}
+
+// ------------------- Main Animation Loop -------------------
+let lastFrameTime = performance.now();
+let lastAiDetectionTime = 0;
+let lastStatsUpdateTime = 0;
+lanes[activeLaneIndex].light = 'green';
+
+function mainLoop(currentTime) {
+    const delta = currentTime - lastFrameTime;
+    lastFrameTime = currentTime;
+
+    // --- All updates now happen in this single, synchronized loop ---
+
+    // 1. Update simulation logic (every frame for smooth movement)
+    updateSimulation(delta, currentTime);
+
+    // 2. Animate the simulated camera feed (every frame)
+    animateSimulatedFeed();
+
+    // 3. Run AI detection (throttled for performance)
+    if (aiModel && currentTime - lastAiDetectionTime > AI_DETECTION_INTERVAL_MS) {
+        lastAiDetectionTime = currentTime;
+        detectObjectsOnCamera(); // This is async, it won't block the loop
+    }
+    
+    // 4. Draw the main simulation scene (every frame)
+    drawScene();
+
+    // 5. Update DOM elements (throttled for performance)
+    if (currentTime - lastStatsUpdateTime > STATS_UPDATE_INTERVAL_MS) {
+        lastStatsUpdateTime = currentTime;
+        updateStatsPanelIfNeeded();
+        updateChallanLogIfNeeded();
+        updateRewardLogIfNeeded();
+        updateAiStats();
+    }
+    
+    requestAnimationFrame(mainLoop);
+}
+
+// ------------------- Initialization -------------------
+window.onload = () => {
+    log('Window loaded. Initializing simulation...');
+    resizeCanvases();
+    setupSimulatedFeed();
+    loadAiModel();
+    requestAnimationFrame(mainLoop);
+};
+
+</script>
+</body>
+</html>
+
